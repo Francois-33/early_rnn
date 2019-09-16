@@ -1,0 +1,4 @@
+dataset,hidden_dims,learning_rate,num_layers,weight_decay,dropout
+BavarianCrops_uniform_25,64,0.01,4,0,0.5
+BavarianCrops_uniform_2500,64,0.005,4,0,0.5
+BavarianCrops,64,0.003,4,0,0.5

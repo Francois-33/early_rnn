@@ -1,9 +1,19 @@
 End-to-end Learning for Early Classification of Time Series (ELECTS)
 ===
 
+Execute hyperparameter tuning and training
+```
+python main.py --model Conv1D --dataset GunPoint
+```
+
 Execute single run
-```angular2
--d BavarianCrops -m DualOutputRNN --epsilon 10 --loss_mode early_reward -x test --earliness_reward_power 1 --train_on train --test_on valid -r 64 -n 4 -e 60 -s -1 -b 1024 --warmup-steps 100 --classmapping /home/marc/data/BavarianCrops/classmapping.csv.holl --dropout 0.5 -w 16 -i 1 -a .4 --store /tmp/test --overwrite
+```bash
+train.py -d GunPoint -m Conv1D --store /tmp --batchsize 256 --overwrite
+```
+
+
+```bash
+train.py -d BavarianCrops_uniform_2500 -m DualOutputRNN --loss-mode "early_reward" --store /tmp --batchsize 256 --overwrite
 ```
 
 <img width=200px src="docs/conv1d.png"/>
@@ -29,6 +39,11 @@ Remote Sensing Dataset
 
 
 ### Download data
+
+```bash
+wget https://corupublic.s3.eu-central-1.amazonaws.com/BavarianCropsHoll8.zip /data/
+unzip /data/BavarianCropsHoll8.zip -d /data/
+```
 
 ```bash
 wget https://s3.eu-central-1.amazonaws.com/corupublic/early_rnn.zip

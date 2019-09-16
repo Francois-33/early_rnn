@@ -12,11 +12,8 @@ class ConvShapeletModel(EarlyClassificationModel):
     def __init__(self,
                  num_layers=1,
                  hidden_dims=50,
-                 n_shapelets_per_size=None,
                  ts_dim=50,
                  n_classes=2,
-                 load_from_disk=None,
-                 use_time_as_feature=False,
                  drop_probability=0.5,
                  seqlength=100,
                  scaleshapeletsize=True,
@@ -100,7 +97,7 @@ class ConvShapeletModel(EarlyClassificationModel):
         print("Loading model from " + path)
         data = torch.load(path, map_location="cpu")
         snapshot = data["params"]
-        config = data["config"]
+        config = data["databases"]
         model_state = snapshot.pop('model_state', snapshot)
         #self.X_fit_ = snapshot.pop('X_fit_', snapshot)
         #self.y_fit_ = snapshot.pop('y_fit_', snapshot)

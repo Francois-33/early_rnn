@@ -1,391 +1,198 @@
-import ray
-import ray.tune as tune
+import sys
+
 import argparse
 import datetime
 import os
-import sys
-from utils.rayresultsparser import RayResultsParser
-from models.DualOutputRNN import DualOutputRNN
-from models.ConvShapeletModel import ConvShapeletModel
-from datasets.UCR_Dataset import UCRDataset
-from datasets.BavarianCrops_Dataset import BavarianCropsDataset
 import torch
 from utils.trainer import Trainer
-import ray.tune
+import ray
+from argparse import Namespace
+import torch.optim as optim
+import config
+from config import TUNE_STORE, TUNE_RUNS, TUNE_BATCHSIZE, TUNE_CPU, TUNE_GPU, EPOCHS, TUNE_EPOCH_CHUNKS
+import pandas as pd
 
+from utils.prepare_components import prepare_model_and_optimizer, prepare_dataset, prepare_loss_criterion
+
+from ray.tune.schedulers import AsyncHyperBandScheduler
+from ray.tune.suggest.bayesopt import BayesOptSearch
+from ray.tune.suggest.hyperopt import HyperOptSearch
+from hyperopt import hp
+
+from utils.optim import ScheduledOptim
+
+def tune(args):
+    args.local_dir = os.path.join(TUNE_STORE, args.model)
+
+    try:
+        nruns = ray.tune.Analysis(os.path.join(args.local_dir, args.dataset)).dataframe().shape[0]
+        resume=False
+        todo_runs = TUNE_RUNS - nruns
+        print(f"{nruns} found in {os.path.join(args.local_dir, args.dataset)} starting remaining {todo_runs}")
+        if todo_runs <= 0:
+            print(f"finished all {TUNE_RUNS} runs. Increase TUNE_RUNS in databases.py if necessary. skipping tuning")
+            return
+
+    except ValueError as e:
+        print(f"could not find any runs in {os.path.join(args.local_dir, args.dataset)}")
+        resume=False
+        todo_runs = TUNE_RUNS
+
+    ray.init(include_webui=False)
+
+    space, points_to_evaluate = get_hyperparameter_search_space(args)
+
+    args_dict = vars(args)
+    config = {**space, **args_dict}
+    args = Namespace(**config)
+
+    algo = HyperOptSearch(
+        space,
+        max_concurrent=4,
+        metric="score",
+        mode="max",
+        points_to_evaluate=points_to_evaluate,
+        n_initial_points=20
+    )
+
+    scheduler = AsyncHyperBandScheduler(metric="score", mode="max", max_t=60,
+                                        grace_period=2,
+                                        reduction_factor=3,
+                                        brackets=4)
+
+    ray.tune.run(
+        RayTrainer,
+        config=config,
+        name=args.dataset,
+        num_samples=todo_runs,
+        local_dir=args.local_dir,
+        search_alg=algo,
+        scheduler=scheduler,
+        verbose=True,
+        reuse_actors=True,
+        resume=resume,
+        checkpoint_at_end=True,
+        global_checkpoint_period=360,
+        checkpoint_score_attr="score",
+        keep_checkpoints_num=5,
+        resources_per_trial=dict(cpu=TUNE_CPU, gpu=TUNE_GPU))
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        'experiment', type=str, default="rnn",
-        help='experiment name. defines hyperparameter search space and tune dataset function'
-             "use 'rnn', 'test_rnn', 'conv1d', or 'test_conv1d'")
-    parser.add_argument(
-        '-d', '--datasetfile', type=str, default="experiments/morietal2017/UCR_dataset_names.txt",
-            help='text file containing dataset names in new lines')
-    parser.add_argument(
-        '-b', '--batchsize', type=int, default=96, help='Batch Size')
-    parser.add_argument(
-        '-c', '--cpu', type=int, default=2, help='number of CPUs allocated per trial run (default 2)')
-    parser.add_argument(
-        '-g', '--gpu', type=float, default=.2,
-        help='number of GPUs allocated per trial run (can be float for multiple runs sharing one GPU, default 0.25)')
-    parser.add_argument(
-        '-r', '--local_dir', type=str, default=os.path.join(os.environ["HOME"],"ray_results"),
-        help='ray local dir. defaults to $HOME/ray_results')
-    parser.add_argument(
-        '--smoke-test', action='store_true', help='Finish quickly for testing')
-    parser.add_argument(
-        '--skip-processed', action='store_true', help='skip already processed datasets (defined by presence of results folder)')
+    parser.add_argument('-d', '--dataset', type=str, help='Dataset')
+    parser.add_argument('-m', '--model', type=str, help='Model variant. supported DualOutputRNN or Conv1d')
+
+    parser.add_argument('-b', '--batchsize', type=int, default=TUNE_BATCHSIZE, help='Model variant. supported DualOutputRNN or Conv1d')
+    parser.add_argument('--train-on', type=str, default="train", help='')
+    parser.add_argument('--test-on', type=str, default="valid", help='')
+
     args, _ = parser.parse_known_args()
     return args
 
-def get_hyperparameter_search_space(experiment, args):
+def get_hyperparameter_search_space(args):
     """
     simple state function to hold the parameter search space definitions for experiments
 
     :param experiment: experiment name
-    :return: ray config dictionary
+    :return: ray databases dictionary
     """
-    if experiment == "rnn":
-
-        return dict(
-            batchsize=args.batchsize,
+    if args.model == "DualOutputRNN":
+        space =  dict(
+            batchsize=TUNE_BATCHSIZE,
             workers=2,
             epochs=30,
             switch_epoch=9999,
             earliness_factor=1,
-            fold=tune.grid_search([0]), #[0, 1, 2, 3, 4]),
+            fold=tune.grid_search([0]),  # [0, 1, 2, 3, 4]),
             hidden_dims=tune.grid_search([2 ** 6, 2 ** 7, 2 ** 8, 2 ** 9]),
-            learning_rate=tune.grid_search([1e-2,1e-3,1e-4]),
+            learning_rate=tune.grid_search([1e-2, 1e-3, 1e-4]),
             dropout=0.5,
-            num_layers=tune.grid_search([1,2,3,4]),
-            dataset=args.dataset)
+            num_layers=tune.grid_search([1, 2, 3, 4]),
+            dataset=args.dataset
+        )
+        return space, None
 
-    if experiment == "test_rnn":
+    elif args.model == "Conv1D":
+        space = dict(
+            hidden_dims=hp.choice('hidden_dims',[25, 50, 75, 100]),
+            num_layers=hp.choice('num_layers',[1,2,3,4,5,6,7,8]),
+            dropout=hp.uniform("dropout", 0, 1),
+            shapelet_width_increment=hp.choice('shapelet_width_increment',[10, 30, 50, 70]),
+            alpha=hp.uniform("alpha", 0, 1),
+            epsilon=hp.uniform("epsilon", 0, 15),
+            weight_decay=hp.loguniform("weight_decay", -1, -12),
+            learning_rate=hp.loguniform("learning_rate", -1, -8))
 
-        return dict(
-            batchsize=args.batchsize,
-            workers=2,
-            epochs=1,
-            switch_epoch=9999,
-            earliness_factor=1,
-            fold=tune.grid_search([5]), #[0, 1, 2, 3, 4]),
-            hidden_dims=tune.grid_search([2 ** 6]),
-            learning_rate=tune.grid_search([1e-2]),
-            dropout=0.3,
-            num_layers=tune.grid_search([1,2]),
-            dataset=args.dataset)
+        model_params = pd.read_csv(config.CONV1D_HYPERPARAMETER_CSV, index_col=0).loc[args.dataset]
 
-    elif experiment == "conv1d":
+        initial_point = dict(
+            hidden_dims = int(model_params.hidden_dims),
+            num_layers=int(model_params.num_layers),
+            dropout=model_params.dropout,
+            shapelet_width_increment=int(model_params.shapelet_width_increment),
+            alpha=model_params.alpha,
+            epsilon=model_params.epsilon,
+            weight_decay=model_params.weight_decay,
+            learning_rate=model_params.learning_rate
+        )
 
-        #initial search space for conv1d (Jan 2nd 2019)
-        #return dict(
-        #    batchsize=args.batchsize,
-        #    workers=2,
-        #    epochs=99999, # will be overwritten by training_iteration criterion
-        #    switch_epoch=9999,
-        #    earliness_factor=1,
-        #    fold=tune.grid_search([0,1,2,3,4]),
-        #    hidden_dims=tune.grid_search([10,25,50,75]),
-        #    learning_rate=tune.grid_search([1e-1,1e-2,1e-3,1e-4]),
-        #    num_layers=tune.grid_search([2,3,4]),
-        #    dataset=args.dataset)
-
-        return dict(
-            batchsize=args.batchsize,
-            workers=2,
-            epochs=20,  # pure train epochs. then one validation...
-            switch_epoch=9999,
-            earliness_factor=1,
-            hidden_dims=tune.grid_search([50, 75, 100]),
-            num_layers=tune.grid_search([8, 6, 4, 2]),
-            drop_probability=tune.grid_search([0.25,0.5,0.75]),
-            shapelet_width_increment=tune.grid_search([10, 30, 50, 70]),
-            ptsepsilon=0,
-            lossmode=tune.grid_search(["loss_cross_entropy"]),
-            learning_rate=None,
-            warmup_steps=100,
-            fold=tune.grid_search([0,1,2]),
-            dataset=args.dataset)
-
-    elif experiment == "test_conv1d":
-
-        return dict(
-            batchsize=args.batchsize,
-            workers=2,
-            epochs=20,  # pure train epochs. then one validation...
-            switch_epoch=9999,
-            earliness_factor=1,
-            hidden_dims=tune.grid_search([50]),
-            num_layers=tune.grid_search([2]),
-            drop_probability=tune.grid_search([0.5]),
-            shapelet_width_increment=tune.grid_search([10]),
-            ptsepsilon=0,
-            lossmode=tune.grid_search(["loss_cross_entropy"]),
-            learning_rate=None,
-            warmup_steps=100,
-            fold=tune.grid_search([0,1]),
-            dataset=args.dataset)
-
+        return space, None #[initial_point]
     else:
-        raise ValueError("please insert valid experiment name for search space (either 'rnn' or 'conv1d')")
-
-def tune_dataset(args):
-
-    config = get_hyperparameter_search_space(args.experiment, args)
-
-    if args.experiment == "rnn" or args.experiment == "test_rnn":
-        tune_dataset_rnn(args, config)
-    elif args.experiment == "conv1d" or args.experiment == "test_conv1d":
-        tune_dataset_conv1d(args, config)
-
-def tune_dataset_rnn(args, config):
-    """designed to to tune on the same datasets as used by Mori et al. 2017"""
-
-    experiment_name = args.dataset
-
-    tune.run_experiments(
-        {
-            experiment_name: {
-                "trial_resources": {
-                    "cpu": args.cpu,
-                    "gpu": args.gpu,
-                },
-                'stop': {
-                    'training_iteration': 1,
-                    'time_total_s':600 if not args.smoke_test else 1,
-                },
-                "run": RayTrainerDualOutputRNN,
-                "num_samples": 1,
-                "checkpoint_at_end": False,
-                "config": config,
-                "local_dir":args.local_dir
-            }
-        },
-        verbose=0,)
-
-def tune_dataset_conv1d(args, config):
-    """designed to to tune on the same datasets as used by Mori et al. 2017"""
-
-    experiment_name = args.dataset
-
-    tune.run_experiments(
-        {
-            experiment_name: {
-                "trial_resources": {
-                    "cpu": args.cpu,
-                    "gpu": args.gpu,
-                },
-                'stop': {
-                    'training_iteration': 1, # 1 iteration = 60 training epochs plus 1 eval epoch
-                    'time_total_s':600 if not args.smoke_test else 1,
-                },
-                "run": RayTrainerConv1D,
-                "num_samples": 1,
-                "checkpoint_at_end": False,
-                "config": config,
-                "local_dir":args.local_dir
-            }
-        },
-        verbose=0)
-
-def tune_mori_datasets(args):
-    """
-    Calls tune_dataset on each dataset listed in the datasetfile.
-
-    :param args: argparse arguments forwarded further
-    """
-    rayresultparser = RayResultsParser()
-
-    datasets = [dataset.strip() for dataset in open(args.datasetfile, 'r').readlines()]
-    resultsdir = os.path.join(args.local_dir, args.experiment)
-    args.local_dir = resultsdir
-
-    if not os.path.exists(resultsdir):
-        os.makedirs(resultsdir)
-
-    if args.skip_processed:
-        processed_datasets = [f for f in os.listdir(resultsdir) if os.path.isdir(os.path.join(resultsdir,f))]
-        print("--skip-processed option enabled. Found {}/{} datasets present. skipping these...".format(len(datasets),len(processed_datasets)))
-        # remove all datasets that are present in the folder already
-        datasets = list(set(datasets).symmetric_difference(processed_datasets))
-
-    # start ray server
-    if not ray.is_initialized():
-        ray.init(include_webui=False)
-        #ray.init(redis_address="10.152.57.13:6379")
-
-    for dataset in datasets:
-        args.dataset = dataset
-        try:
-
-            tune_dataset(args)
-
-            experimentpath = os.path.join(resultsdir, dataset)
-            if not os.path.exists(experimentpath):
-                os.makedirs(experimentpath)
-
-            if args.experiment == "test_conv1d" or args.experiment == "conv1d":
-                searched_parameters = ["hidden_dims", "learning_rate", "num_layers", "shapelet_width_increment"]
-            elif args.experiment == "test_rnn" or args.experiment == "rnn":
-                searched_parameters=["hidden_dims", "learning_rate", "num_layers"]
-            rayresultparser.get_best_hyperparameters(resultsdir, hyperparametercsv=resultsdir+"/hyperparameter.csv",
-                                                     group_by=searched_parameters)
-
-            top = rayresultparser._get_n_best_runs(experimentpath=experimentpath,n=1,group_by=searched_parameters)
-            print_best(top, filename=os.path.join(resultsdir, "datasets.log"))
+        raise ValueError("did not recognize model "+args.model)
 
 
-        except KeyboardInterrupt:
-            sys.exit(0)
-        except Exception as e:
-            #print("error" + str(e))
-            #continue
-            raise
-
-def print_best(top, filename):
-    """
-    Takes best run from pandas dataframe <top> and writes parameter and accuracy info to a text file
-    """
-    time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    # num_hidden, learning_rate, num_rnn_layers = top.iloc[0].name
-
-    if len(top) == 0:
-        print("could not write best runs")
-        return
-
-    best_run = top.iloc[0]
-
-    param_fmt = "hidden_dims:{hidden_dims}, learning_rate:{learning_rate}, num_layers:{num_layers}"
-    param_string = param_fmt.format(hidden_dims=best_run.loc["hidden_dims"],
-                                    learning_rate=best_run.loc["learning_rate"],
-                                    num_layers=best_run["num_layers"])
-
-    performance_fmt = "accuracy {accuracy:.2f} (+-{std:.2f}) in {folds:.0f} folds"
-    perf_string = performance_fmt.format(accuracy=best_run.mean_accuracy,
-                                         std=best_run.std_accuracy,
-                                         folds=best_run.nfolds)
-
-    print("{time} finished tuning dataset {dataset} {perf_string}, {param_string}".format(time=time,
-                                                                                          dataset=best_run.dataset,
-                                                                                          perf_string=perf_string,
-                                                                                          param_string=param_string),
-          file=open(filename, "a"))
-
-
-
-class RayTrainerDualOutputRNN(ray.tune.Trainable):
+class RayTrainer(ray.tune.Trainable):
     def _setup(self, config):
 
-        if config["dataset"] == "BavarianCrops":
-            region = "HOLL_2018_MT_pilot"
-            root = "/home/marc/data/BavarianCrops"
-            nsamples=None
-            traindataset = BavarianCropsDataset(root=root, region=region, partition="train", nsamples=nsamples)
-            validdataset = BavarianCropsDataset(root=root, region=region, partition="valid", nsamples=nsamples)
-        else:
-            traindataset = UCRDataset(config["dataset"],
-                                      partition="train",
-                                      ratio=.8,
-                                      randomstate=config["fold"],
-                                      silent=False,
-                                      augment_data_noise=0)
+        # one iteration is five training epochs, one test epoch
+        self.epochs = EPOCHS // TUNE_EPOCH_CHUNKS
 
-            validdataset = UCRDataset(config["dataset"],
-                                      partition="valid",
-                                      ratio=.8,
-                                      randomstate=config["fold"],
-                                      silent=False)
+        print(config)
 
-        nclasses = traindataset.nclasses
+        args = Namespace(**config)
+        self.traindataloader, self.validdataloader = prepare_dataset(args)
 
-        self.epochs = config["epochs"]
+        nclasses = self.traindataloader.dataset.nclasses
+        seqlength = self.traindataloader.dataset.sequencelength
+        input_dims = self.traindataloader.dataset.ndims
 
-        # handles multitxhreaded batching andconfig shuffling
-        self.traindataloader = torch.utils.data.DataLoader(traindataset, batch_size=config["batchsize"], shuffle=True,
-                                                           num_workers=config["workers"],
-                                                           pin_memory=False)
-        self.validdataloader = torch.utils.data.DataLoader(validdataset, batch_size=config["batchsize"], shuffle=False,
-                                                      num_workers=config["workers"], pin_memory=False)
+        self.model, self.optimizer = prepare_model_and_optimizer(args, input_dims, seqlength, nclasses)
 
-        self.model = DualOutputRNN(input_dim=traindataset.ndims,
-                                   nclasses=nclasses,
-                                   hidden_dims=config["hidden_dims"],
-                                   num_rnn_layers=config["num_layers"])
+        self.criterion = prepare_loss_criterion(args)
 
         if torch.cuda.is_available():
             self.model = self.model.cuda()
 
-        self.trainer = Trainer(self.model, self.traindataloader, self.validdataloader, **config)
+        if "model" in config.keys():
+            config.pop('model', None)
+        #trainer = Trainer(self.model, self.traindataloader, self.validdataloader, **databases)
+
+        self.trainer = Trainer(self.model,
+                               self.traindataloader,
+                               self.validdataloader,
+                               self.optimizer,
+                               self.criterion,
+                               store=args.local_dir,
+                               test_every_n_epochs=999,
+                               visdomlogger=None)
 
     def _train(self):
         # epoch is used to distinguish training phases. epoch=None will default to (first) cross entropy phase
 
         # train five epochs and then infer once. to avoid overhead on these small datasets
         for i in range(self.epochs):
-            self.trainer.train_epoch(epoch=None)
+            trainstats = self.trainer.train_epoch(epoch=None)
 
-        return self.trainer.test_epoch(dataloader=self.validdataloader)
+        stats = self.trainer.test_epoch(self.validdataloader)
+        stats["score"] = .5*stats["accuracy"] + .5*(1-stats["earliness"])
+        stats.pop("inputs")
+        stats.pop("confusion_matrix")
+        stats.pop("probas")
 
-    def _save(self, path):
-        path = path + ".pth"
-        torch.save(self.model.state_dict(), path)
-        return path
+        #stats["lossdelta"] = trainstats["loss"] - stats["loss"]
+        #stats["trainloss"] = trainstats["loss"]
 
-    def _restore(self, path):
-        state_dict = torch.load(path, map_location="cpu")
-        self.model.load_state_dict(state_dict)
-
-class RayTrainerConv1D(ray.tune.Trainable):
-    def _setup(self, config):
-
-        traindataset = UCRDataset(config["dataset"],
-                                  partition="train",
-                                  ratio=.8,
-                                  randomstate=config["fold"],
-                                  silent=True,
-                                  augment_data_noise=0)
-
-        validdataset = UCRDataset(config["dataset"],
-                                  partition="valid",
-                                  ratio=.8,
-                                  randomstate=config["fold"],
-                                  silent=True)
-
-        self.epochs = config["epochs"]
-
-        nclasses = traindataset.nclasses
-
-        # handles multitxhreaded batching andconfig shuffling
-        self.traindataloader = torch.utils.data.DataLoader(traindataset, batch_size=config["batchsize"], shuffle=True,
-                                                           num_workers=config["workers"],
-                                                           pin_memory=False)
-        self.validdataloader = torch.utils.data.DataLoader(validdataset, batch_size=config["batchsize"], shuffle=False,
-                                                      num_workers=config["workers"], pin_memory=False)
-
-        self.model = ConvShapeletModel(num_layers=config["num_layers"],
-                                       hidden_dims=config["hidden_dims"],
-                                       ts_dim=1,
-                                       n_classes=nclasses,
-                                       use_time_as_feature=True,
-                                       drop_probability=config["drop_probability"],
-                                       scaleshapeletsize=False,
-                                       shapelet_width_increment=config["shapelet_width_increment"])
-
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
-
-        self.trainer = Trainer(self.model, self.traindataloader, self.validdataloader, **config)
-
-    def _train(self):
-        # epoch is used to distinguish training phases. epoch=None will default to (first) cross entropy phase
-
-        # train epochs and then infer once. to avoid overhead on these small datasets
-        for i in range(self.epochs):
-            self.trainer.train_epoch(epoch=None)
-
-        return self.trainer.test_epoch(dataloader=self.validdataloader)
+        return stats
 
     def _save(self, path):
         path = path + ".pth"
@@ -398,7 +205,10 @@ class RayTrainerConv1D(ray.tune.Trainable):
 
 if __name__=="__main__":
 
-    # parse input arguments
     args = parse_args()
-    tune_mori_datasets(args)
+
+    tune(args)
+
+    #print("Best databases is", analysis.get_best_config(metric="kappa"))
+    #analysis.dataframe().to_csv("/tmp/result.csv")
 

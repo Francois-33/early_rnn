@@ -34,9 +34,9 @@ class RayResultsParser():
             else:
                 result = run
 
-            config = result.pop("config")
+            config = result.pop("databases")
 
-            # merge result dict and config dict
+            # merge result dict and databases dict
             for key, value in config.items():
                 result[key] = value
 

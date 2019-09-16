@@ -97,7 +97,7 @@ def plot_accuracyearliness_sota_experiment(ptsepsilon=10,
                                            entropy_factor=0.01,
                                            compare="mori",
                                            csvfile = "data/sota_comparison/runs.csv",
-                                           metafile="data/UCR_Datasets/DataSummary.csv",
+                                           metafile="data/UCR_Datasets/UCR.csv",
                                            mori_accuracy="data/morietal2017/mori-accuracy-sr2-cf2.csv",
                                            mori_earliness="data/morietal2017/mori-earliness-sr2-cf2.csv",
                                            relclass_accuracy="data/morietal2017/relclass-accuracy-gaussian-quadratic-set.csv",
@@ -151,7 +151,7 @@ def plot_accuracy_sota_experiment(ptsepsilon=10,
                                   entropy_factor=0.01,
                                   compare="mori",
                                   csvfile = "data/sota_comparison/runs.csv",
-                                  metafile="data/UCR_Datasets/DataSummary.csv",
+                                  metafile="data/UCR_Datasets/UCR.csv",
                                   mori_accuracy="data/morietal2017/mori-accuracy-sr2-cf2.csv",
                                   mori_earliness="data/morietal2017/mori-earliness-sr2-cf2.csv",
                                   relclass_accuracy="data/morietal2017/relclass-accuracy-gaussian-quadratic-set.csv",
@@ -262,7 +262,7 @@ def qualitative_figure(csvfile = "data/sota_comparison/runs.csv", compare_accura
         plt.clf()
 
 def plot_scatter(csvfile="data/sota_comparison/runs.csv",
-                 metafile="data/UCR_Datasets/DataSummary.csv",
+                 metafile="data/UCR_Datasets/UCR.csv",
                  mori_accuracy="data/morietal2017/mori-accuracy-sr2-cf2.csv",
                  mori_earliness="data/morietal2017/mori-earliness-sr2-cf2.csv",
                  relclass_accuracy="data/morietal2017/relclass-accuracy-gaussian-quadratic-set.csv",
@@ -306,7 +306,7 @@ if __name__=="__main__":
     cleanup()
 
     csvfile = "../data/runs_conv1d.csv"
-    metafile = "../data/UCR_Datasets/DataSummary.csv"
+    metafile = "../data/UCR_Datasets/UCR.csv"
     mori_accuracy = "../data/UCR_Datasets/mori-accuracy-sr2-cf2.csv"
     mori_earliness = "../data/UCR_Datasets/mori-earliness-sr2-cf2.csv"
     relclass_accuracy = "../data/UCR_Datasets/relclass-accuracy-gaussian-quadratic-set.csv"

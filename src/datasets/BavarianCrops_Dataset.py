@@ -71,6 +71,9 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
 
     def read_ids(self):
         partition = self.partition
+        if partition=="test":
+            partition="eval"
+
         if partition == "trainvalid":
             ids_file_train = os.path.join(self.root, "ids","blocks",
                                           "{region}_{partition}.txt".format(region=self.region.lower(),
