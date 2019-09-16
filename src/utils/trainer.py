@@ -280,7 +280,7 @@ class Trainer():
         for iteration, data in enumerate(self.traindataloader):
             self.optimizer.zero_grad()
 
-            inputs, targets = data
+            inputs, targets, meta = data
 
             if torch.cuda.is_available():
                 inputs = inputs.cuda()
@@ -334,7 +334,7 @@ class Trainer():
         with torch.no_grad():
             for iteration, data in enumerate(dataloader):
 
-                inputs, targets = data
+                inputs, targets, meta = data
 
                 if torch.cuda.is_available():
                     inputs = inputs.cuda()

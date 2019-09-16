@@ -7,14 +7,13 @@ from datasets.Synthetic_Dataset import SyntheticDataset
 import argparse
 from argparse import Namespace
 from utils.trainer import Trainer
-from utils.optim import ScheduledOptim
 import pandas as pd
 import os
 import numpy as np
 from models.wavenet_model import WaveNetModel
 from torch.utils.data.sampler import RandomSampler, SequentialSampler, BatchSampler, WeightedRandomSampler
-from sampler.imbalanceddatasetsampler import ImbalancedDatasetSampler
 from datasets.UniformCrops_Dataset import UniformDataset
+from experiments import experiments
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -25,23 +24,15 @@ def parse_args():
                                                 '(requires --hyperparametercsv)')
     parser.add_argument(
         '-b', '--batchsize', type=int, default=32, help='Batch Size')
+    parser.add_argument('-m', '--model', type=str, default="DualOutputRNN", help='Model variant')
     parser.add_argument(
-        '-m', '--model', type=str, default="DualOutputRNN", help='Model variant')
-    parser.add_argument(
-        '-e', '--epochs', type=int, default=100, help='number of epochs')
-    parser.add_argument(
-        '-w', '--workers', type=int, default=4, help='number of CPU workers to load the next batch')
-    parser.add_argument(
-        '-l', '--learning_rate', type=float, default=0.1, help='learning rate')
-    parser.add_argument(
-        '--train_on', type=str, default="train", help="dataset partition to train. Choose from 'train', 'valid', "
+        '-x', '--experiment', type=int, default=100, help='experiment. refer to experiments.py for details')
+    parser.add_argument('-e', '--epochs', type=int, default=100, help='number of epochs')
+    parser.add_argument('-w', '--workers', type=int, default=4, help='number of CPU workers to load the next batch')
+    parser.add_argument('-l', '--learning_rate', type=float, default=0.1, help='learning rate')
+    parser.add_argument('--train_on', type=str, default="train", help="dataset partition to train. Choose from 'train', 'valid', "
                                                       "'trainvalid', 'eval' (default 'train')")
-    parser.add_argument(
-        '--test_on', type=str, default="valid",
-        help="dataset partition to train. Choose from 'train', 'valid', 'trainvalid', 'eval' (default 'valid')")
-    parser.add_argument(
-        '--classmapping', type=str, default=None,
-        help="classmapping for the bavarian crops dataset line-wise text file of format (0,0,415)")
+    parser.add_argument('--test_on', type=str, default="valid",help="dataset partition to train. Choose from 'train', 'valid', 'trainvalid', 'eval' (default 'valid')")
     parser.add_argument(
         '--dropout', type=float, default=.2, help='dropout probability of the rnn layer')
     parser.add_argument(
@@ -263,10 +254,9 @@ def getDataloader(dataset, partition, train_valid_split_ratio=0.75,seed=None, nd
     if dataset == "synthetic":
         torchdataset = SyntheticDataset(num_samples=2000, T=100)
     elif dataset == "BavarianCrops":
-        root = "/home/marc/data/BavarianCrops"
-        torchdataset = BavarianCropsDataset(root=root, region=kwargs["region"], partition=partition, nsamples=nsamples, classmapping=kwargs["classmapping"], ndvi=ndvi)
+        root = "/data/BavarianCrops"
+        torchdataset = BavarianCropsDataset(root=root, region=kwargs["region"], partition=partition, classmapping=kwargs["classmapping"])
     elif "UniformCrops" in dataset:
-
         nsamples = dataset.split("_")[-1]
 
         root = "/home/marc/projects/EarlyClassification/Databases/"

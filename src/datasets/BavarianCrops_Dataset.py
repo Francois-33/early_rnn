@@ -5,6 +5,8 @@ import os
 import sys
 import numpy as np
 from numpy import genfromtxt
+import tqdm
+
 
 BANDS = ['B1', 'B10', 'B11', 'B12', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8',
        'B8A', 'B9']
@@ -13,74 +15,71 @@ PADDING_VALUE = -1
 
 class BavarianCropsDataset(torch.utils.data.Dataset):
 
-    def __init__(self, root, region=None, partition="train", nsamples=None, samplet=70, classmapping=None, ndvi=False):
-        """
+    def __init__(self, root, partition, classmapping, region=None, samplet=70, cache=True, seed=0, validfraction=0.1):
+        assert partition in ["trainvalid", "train","test","valid"]
 
-        :param root:
-        :param region: csv/<region>/<id>.csv
-        :param partition: one of train/valid/eval
-        :param nsamples: load less samples for debug
-        """
+        self.seed = seed
+        self.validfraction = validfraction
+
+        # ensure that different seeds are set per partition
+        seed += sum([ord(ch) for ch in partition])
+        np.random.seed(seed)
+        torch.random.manual_seed(seed)
 
         self.root = root
+
+        self.mapping = pd.read_csv(classmapping, index_col=0).sort_values(by="id")
+        self.mapping = self.mapping.set_index("nutzcode")
+        self.classes = self.mapping["id"].unique()
+        self.classname = self.mapping.groupby("id").first().classname.values
+        self.klassenname = self.mapping.groupby("id").first().klassenname.values
+        self.nclasses = len(self.classes)
+
         self.region = region
         self.partition = partition
-        self.data_folder = "{root}/csv/{region}".format(root=self.root, region=self.region)
+        if region=="HOLL_2018_MT_pilot":
+            self.data_folder = "{root}/csv/holl".format(root=self.root)
         self.samplet = samplet
-        self.ndvi = ndvi
-        self.nsamples = nsamples
-        if self.nsamples==-1:
-            self.nsamples=None
 
         #all_csv_files
         #self.csvfiles = [ for f in os.listdir(root)]
-        print("Initializing BavarianCropsDataset {} partition in region {}".format(self.partition, self.region))
+        print("Initializing BavarianCropsDataset {} partition in {}".format(self.partition, self.region))
 
-        if classmapping is None:
-            classmapping = self.root + "/classmapping.csv"
-
-        self.mapping = pd.read_csv(classmapping, index_col=0)
-        self.mapping = self.mapping.set_index("nutzcode")
-        self.classes = self.mapping["id"].unique()
-        self.nclasses = len(self.classes)
-
-        self.cache = os.path.join("/tmp","npy",region, partition)
+        self.cache = os.path.join(self.root,"npy",os.path.basename(classmapping),region, partition)
 
         print("read {} classes".format(self.nclasses))
 
-        if self.cache_exists() and self.mapping_consistent_with_cache():
-            print("no cached dataset found. iterating through csv folders in "+str(self.data_folder))
+        if cache and self.cache_exists() and not self.mapping_consistent_with_cache():
+            self.clean_cache()
+
+        if cache and self.cache_exists() and self.mapping_consistent_with_cache():
+            print("precached dataset files found at " + self.cache)
             self.load_cached_dataset()
         else:
-            print("precached dataset files found at "+self.cache)
+            print("no cached dataset found. iterating through csv folders in " + str(self.data_folder))
             self.cache_dataset()
 
-        self.sequencelength = self.sequencelength
-
-        if self.nsamples is not None:
-            idxs = np.random.choice(len(self.ids), self.nsamples)
-            self.X = self.X[idxs]
-            self.y = self.y[idxs]
-            self.ids = self.ids[idxs]
-            print("--nsamples argument provided... using only {} elements from the dataset".format(self.nsamples))
-
-        # if use only ndvi index instead
-        if self.ndvi:
-            self.ndims=1
+        self.hist, _ = np.histogram(self.y, bins=self.nclasses)
 
         print("loaded {} samples".format(len(self.ids)))
         #print("class frequencies " + ", ".join(["{c}:{h}".format(h=h, c=c) for h, c in zip(self.hist, self.classes)]))
 
-    def read_ids(self, partition):
+        print(self)
+
+    def __str__(self):
+        return "Dataset {}. region {}. partition {}. X:{}, y:{} with {} classes".format(self.root, self.region, self.partition,str(len(self.X)) +"x"+ str(self.X[0].shape), self.y.shape, self.nclasses)
+
+    def read_ids(self):
+        partition = self.partition
         if partition == "trainvalid":
-            ids_file_train = os.path.join(self.root, "ids",
+            ids_file_train = os.path.join(self.root, "ids","blocks",
                                           "{region}_{partition}.txt".format(region=self.region.lower(),
                                                                             partition="train"))
             with open(ids_file_train, "r") as f:
                 train_ids = [int(id) for id in f.readlines()]
             print("Found {} ids in {}".format(len(train_ids), ids_file_train))
 
-            ids_file_valid = os.path.join(self.root, "ids",
+            ids_file_valid = os.path.join(self.root, "ids","blocks",
                                           "{region}_{partition}.txt".format(region=self.region.lower(),
                                                                             partition="valid"))
             with open(ids_file_valid, "r") as f:
@@ -91,7 +90,7 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
             ids = train_ids + valid_ids
 
         elif partition in ["train", "valid", "eval"]:
-            ids_file = os.path.join(self.root, "ids",
+            ids_file = os.path.join(self.root, "ids","blocks",
                                     "{region}_{partition}.txt".format(region=self.region.lower(), partition=partition))
             with open(ids_file, "r") as f:
                 ids = [int(id) for id in f.readlines()]
@@ -100,18 +99,63 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
 
         return ids
 
+    def read_ids_random(self):
+        assert isinstance(self.seed, int)
+        assert isinstance(self.validfraction, float)
+        assert self.partition in ["train", "valid", "test"]
+        assert self.trainids is not None
+        assert os.path.exists(self.trainids)
+
+        np.random.seed(self.seed)
+
+        """if trainids file provided and no testids file <- sample holdback set from trainids"""
+        if self.testids is None:
+            assert self.partition in ["train", "valid"]
+
+            print("partition {} and no test ids file provided. Splitting trainids file in train and valid partitions".format(self.partition))
+
+            with open(self.trainids,"r") as f:
+                ids = [int(id) for id in f.readlines()]
+            print("Found {} ids in {}".format(len(ids), self.trainids))
+
+            np.random.shuffle(ids)
+
+            validsize = int(len(ids) * self.validfraction)
+            validids = ids[:validsize]
+            trainids = ids[validsize:]
+
+            print("splitting {} ids in {} for training and {} for validation".format(len(ids), len(trainids), len(validids)))
+
+            assert len(validids) + len(trainids) == len(ids)
+
+            if self.partition == "train":
+                return trainids
+            if self.partition == "valid":
+                return validids
+
+        elif self.testids is not None:
+            assert self.partition in ["train", "test"]
+
+            if self.partition=="test":
+                with open(self.testids,"r") as f:
+                    test_ids = [int(id) for id in f.readlines()]
+                print("Found {} ids in {}".format(len(test_ids), self.testids))
+                return test_ids
+
+            if self.partition == "train":
+                with open(self.trainids, "r") as f:
+                    train_ids = [int(id) for id in f.readlines()]
+                return train_ids
+
     def cache_dataset(self):
         """
         Iterates though the data folders and stores y, ids, classweights, and sequencelengths
         X is loaded at with getitem
         """
+        #ids = self.split(self.partition)
 
-        #ids_file = os.path.join(self.root,"ids","{region}_{partition}.txt".format(region=self.region.lower(), partition=self.partition))
-        #with open(ids_file,"r") as f:
-        #    ids = [int(id) for id in f.readlines()]
-        ids = self.read_ids(self.partition)
-
-        #print("Found {} ids in {}".format(len(ids),ids_file))
+        ids = self.read_ids()
+        assert len(ids) > 0
 
         self.X = list()
         self.nutzcodes = list()
@@ -120,11 +164,8 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
         )
         self.ids = list()
         self.samples = list()
-        i = 0
-        for id in ids:
-            if i%500==0:
-                update_progress(i/float(len(ids)))
-            i+=1
+        #i = 0
+        for id in tqdm.tqdm(ids):
 
             id_file = self.data_folder+"/{id}.csv".format(id=id)
             if os.path.exists(id_file):
@@ -133,16 +174,8 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
                 X,nutzcode = self.load(id_file)
 
                 if len(nutzcode) > 0:
-
-                    # only take first since class id does not change through time
                     nutzcode = nutzcode[0]
-
-                    # drop samples where nutzcode is not in mapping table
                     if nutzcode in self.mapping.index:
-
-                        # replace nutzcode with class id- e.g. 451 -> 0, 999 -> 1
-                        #y = self.mapping.loc[y]["id"]
-
                         self.X.append(X)
                         self.nutzcodes.append(nutzcode)
                         self.ids.append(id)
@@ -152,6 +185,7 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
         self.y = self.applyclassmapping(self.nutzcodes)
 
         self.sequencelengths = np.array([np.array(X).shape[0] for X in self.X])
+        assert len(self.sequencelengths) > 0
         self.sequencelength = self.sequencelengths.max()
         self.ndims = np.array(X).shape[1]
 
@@ -170,7 +204,8 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
 
     def mapping_consistent_with_cache(self):
         # cached y must have the same number of classes than the mapping
-        return len(np.unique(np.load(os.path.join(self.cache, "y.npy")))) == self.nclasses
+        return True
+        #return len(np.unique(np.load(os.path.join(self.cache, "y.npy")))) == self.nclasses
 
     def cache_variables(self, y, sequencelengths, ids, ndims, X, classweights):
         os.makedirs(self.cache, exist_ok=True)
@@ -185,18 +220,17 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
 
     def load_cached_dataset(self):
         # load
-        self.classweights = np.load(os.path.join(self.cache, "classweights.npy"), allow_pickle=True)
-        self.y = np.load(os.path.join(self.cache, "y.npy"), allow_pickle=True)
-        self.ndims = int(np.load(os.path.join(self.cache, "ndims.npy"), allow_pickle=True))
-        self.sequencelengths = np.load(os.path.join(self.cache, "sequencelengths.npy"), allow_pickle=True)
+        self.classweights = np.load(os.path.join(self.cache, "classweights.npy"))
+        self.y = np.load(os.path.join(self.cache, "y.npy"))
+        self.ndims = int(np.load(os.path.join(self.cache, "ndims.npy")))
+        self.sequencelengths = np.load(os.path.join(self.cache, "sequencelengths.npy"))
         self.sequencelength = self.sequencelengths.max()
-
-        self.ids = np.load(os.path.join(self.cache, "ids.npy"), allow_pickle=True)
+        self.ids = np.load(os.path.join(self.cache, "ids.npy"))
         #self.dataweights = np.load(os.path.join(self.cache, "dataweights.npy"))
         self.X = np.load(os.path.join(self.cache, "X.npy"), allow_pickle=True)
 
     def cache_exists(self):
-        #weightsexist = os.path.exists(os.path.join(self.cache, "classweights.npy"))
+        weightsexist = os.path.exists(os.path.join(self.cache, "classweights.npy"))
         yexist = os.path.exists(os.path.join(self.cache, "y.npy"))
         ndimsexist = os.path.exists(os.path.join(self.cache, "ndims.npy"))
         sequencelengthsexist = os.path.exists(os.path.join(self.cache, "sequencelengths.npy"))
@@ -206,7 +240,7 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
         return yexist and sequencelengthsexist and idsexist and ndimsexist and Xexists
 
     def clean_cache(self):
-        #os.remove(os.path.join(self.cache, "classweights.npy"))
+        os.remove(os.path.join(self.cache, "classweights.npy"))
         os.remove(os.path.join(self.cache, "y.npy"))
         os.remove(os.path.join(self.cache, "ndims.npy"))
         os.remove(os.path.join(self.cache, "sequencelengths.npy"))
@@ -272,37 +306,11 @@ class BavarianCropsDataset(torch.utils.data.Dataset):
             X = X[idxs]
             y = y[idxs]
 
-        if self.ndvi:
-            B08 = X[:, 10]  # Near infrared
-            B04 = X[:, 6]  # red channel
-            X = (B08 - B04) / (B08 + B04)
-            X = X.reshape(-1,1) # add dimension -> (samplet x 1)
-            #X = X.un
-
 
         X = torch.from_numpy(X).type(torch.FloatTensor)
         y = torch.from_numpy(y).type(torch.LongTensor)
 
-        return X, y
-
-def update_progress(progress):
-    barLength = 20 # Modify this to change the length of the progress bar
-    status = ""
-    if isinstance(progress, int):
-        progress = float(progress)
-    if not isinstance(progress, float):
-        progress = 0
-        status = "error: progress var must be float\r\n"
-    if progress < 0:
-        progress = 0
-        status = "Halt...\r\n"
-    if progress >= 1:
-        progress = 1
-        status = "Done...\r\n"
-    block = int(round(barLength*progress))
-    text = "\rLoaded: [{0}] {1:.2f}% {2}".format( "#"*block + "-"*(barLength-block), progress*100, status)
-    sys.stdout.write(text)
-    sys.stdout.flush()
+        return X, y, self.ids[idx]
 
 if __name__=="__main__":
     root = "/home/marc/data/BavarianCrops"
