@@ -9,7 +9,7 @@ import ray
 from argparse import Namespace
 import torch.optim as optim
 import config
-from config import TUNE_STORE, TUNE_RUNS, TUNE_BATCHSIZE, TUNE_CPU, TUNE_GPU, EPOCHS, TUNE_EPOCH_CHUNKS
+from config import TUNE_STORE, TUNE_RUNS, TUNE_BATCHSIZE, TUNE_CPU, TUNE_GPU, EPOCHS, TUNE_EPOCH_CHUNKS, TUNE_MAX_CONCURRENT
 import pandas as pd
 
 from utils.prepare_components import prepare_model_and_optimizer, prepare_dataset, prepare_loss_criterion
@@ -48,11 +48,11 @@ def tune(args):
 
     algo = HyperOptSearch(
         space,
-        max_concurrent=4,
+        max_concurrent=TUNE_MAX_CONCURRENT,
         metric="score",
         mode="max",
         points_to_evaluate=points_to_evaluate,
-        n_initial_points=20
+        n_initial_points=TUNE_MAX_CONCURRENT,
     )
 
     scheduler = AsyncHyperBandScheduler(metric="score", mode="max", max_t=60,
@@ -72,7 +72,7 @@ def tune(args):
         reuse_actors=True,
         resume=resume,
         checkpoint_at_end=True,
-        global_checkpoint_period=360,
+        #global_checkpoint_period=360,
         checkpoint_score_attr="score",
         keep_checkpoints_num=5,
         resources_per_trial=dict(cpu=TUNE_CPU, gpu=TUNE_GPU))

@@ -1,12 +1,14 @@
 numpy
 psutil
-torch
+torch==1.1.0
 pandas
-ray==0.6.5
+ray==0.7.4
 seaborn
 cython
 matplotlib
 requests
 visdom
 librosa
-torchvision
+torchvision==0.2.2
+tqdm
+hyperopt
