@@ -56,9 +56,9 @@ TUNE_CPU=2
 TUNE_GPU=.2
 TRAIN_STORE = "/data/early_rnn/train"
 
-TRAIN_BATCHSIZE=64
+TRAIN_BATCHSIZE=128
 
-EPOCHS = 200
+EPOCHS = 100
 
 LOSS_MODE = "early_reward"
 
