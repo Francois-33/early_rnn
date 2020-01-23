@@ -3,9 +3,11 @@ import pandas as pd
 import ray.tune as tune
 import argparse
 import os
+import config
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--all', action="store_true", help='update all')
     parser.add_argument('-d', '--dataset', type=str, help='Dataset')
     parser.add_argument('-m', '--model', type=str, help='Model')
     args, _ = parser.parse_known_args()
@@ -68,5 +70,15 @@ def update_result_csv(model, dataset):
 
 if __name__=="__main__":
     args = parse_args()
-    update_hyperparameter_csv(args.model, args.dataset)
-    update_result_csv(args.model, args.dataset)
+    if args.all:
+        for ds in config.UCR_DATASETS:
+            try:
+                update_hyperparameter_csv(args.model, ds)
+            except Exception as e:
+                print(f"failed on {ds} exception {e}. continuing")
+                continue
+            try:
+                update_result_csv(args.model, ds)
+            except Exception as e:
+                print(f"failed on {ds} exception {e}. continuing")
+

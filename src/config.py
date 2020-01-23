@@ -49,11 +49,12 @@ UCR_DATASETS = ['Adiac', 'ArrowHead', 'Beef', 'BeetleFly', 'BirdChicken', 'Car',
                 'WordSynonyms', 'Worms', 'WormsTwoClass', 'Yoga']
 
 TUNE_STORE = "/data/early_rnn/tune"
-TUNE_RUNS = 300
+TUNE_RUNS = 200
 TUNE_BATCHSIZE=32
 TUNE_EPOCH_CHUNKS = 20
 TUNE_CPU=2
 TUNE_GPU=.2
+TUNE_MAX_CONCURRENT=6
 TRAIN_STORE = "/data/early_rnn/train"
 
 TRAIN_BATCHSIZE=128
